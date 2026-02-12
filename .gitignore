@@ -1,0 +1,135 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# PyInstaller
+*.manifest
+*.spec
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+.pytest_cache/
+
+# Translations
+*.mo
+*.pot
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# pyenv
+.python-version
+
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Spyder project settings
+.spyderproject
+.spyproject
+
+# Rope project settings
+.ropeproject
+
+# mkdocs documentation
+/site
+
+# mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Raspberry Pi specific
+*.img
+*.iso
+
+# ML Models (large files - keep in cloud storage)
+*.h5
+*.tflite
+*.pb
+*.onnx
+
+# Training data (large files)
+data/raw/*.csv
+data/processed/*.csv
+data/synthetic/*.csv
+data/splits/*.csv
+
+# Logs
+logs/training/*.log
+logs/runtime/*.log
+logs/errors/*.log
+*.log
+
+# TensorBoard
+logs/tensorboard/
+
+# Temporary files
+*.tmp
+*.temp
+.DS_Store
+Thumbs.db
+
+# Sensor calibration data (device-specific)
+config/calibration_*.json
+
+# Keep model directories but not contents
+!models/saved/.gitkeep
+!models/tflite/.gitkeep
+!models/object_detection/.gitkeep
+!models/checkpoints/.gitkeep
+!data/raw/.gitkeep
+!data/processed/.gitkeep
+!data/synthetic/.gitkeep
+!data/splits/.gitkeep
+!logs/training/.gitkeep
+!logs/runtime/.gitkeep
+!logs/errors/.gitkeep
