@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+.python-version
+laptop/venv/
+laptop/__pycache__/
+
+# Secrets
+secrets.yaml
+*.key
+*.pem
+
+# Data (too big for git — keep code, not the 25K images)
+laptop/data/images/
+laptop/data/dataset.csv
+laptop/data/dataset.csv.bak
+laptop/data/datasets/
+laptop/autonomous_logs/
+laptop/gradcam_outputs/
+laptop/data_collection/
+
+# Models (large binary weights)
+laptop/models/best.pt
+laptop/models/*.pt
+laptop/models/*.onnx
+laptop/models/confusion_matrix.png
+laptop/models/eval_metrics.json
+laptop/yolov8n.pt
+laptop/runs/
+
+# Backups
+*.bak
+raspberry_pi.bak_*/
+
+# OS / IDE
+.DS_Store
+.vscode/
+.idea/
+*.swp
