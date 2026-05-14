@@ -30,14 +30,14 @@ def action_to_pi_command(action_id: int) -> dict:
     fwd_cmd = 'BACKWARD' if DRIVE_INVERTED else 'FORWARD'
     rev_cmd = 'FORWARD' if DRIVE_INVERTED else 'BACKWARD'
     m = {
-        FORWARD:       {'command': fwd_cmd, 'steer': 'STEER_STOP', 'speed': 80},
-        SLOW_DOWN:     {'command': fwd_cmd, 'steer': 'STEER_STOP', 'speed': 45},
-        TURN_LEFT:     {'command': fwd_cmd, 'steer': 'LEFT',       'speed': 55},
-        TURN_RIGHT:    {'command': fwd_cmd, 'steer': 'RIGHT',      'speed': 55},
+        FORWARD:       {'command': fwd_cmd, 'steer': 'STEER_STOP', 'speed': 100},
+        SLOW_DOWN:     {'command': fwd_cmd, 'steer': 'STEER_STOP', 'speed': 60},
+        TURN_LEFT:     {'command': fwd_cmd, 'steer': 'LEFT',       'speed': 70},
+        TURN_RIGHT:    {'command': fwd_cmd, 'steer': 'RIGHT',      'speed': 70},
         STOP:          {'command': 'STOP',  'steer': 'STEER_STOP', 'speed': 0},
-        REVERSE_LEFT:  {'command': rev_cmd, 'steer': 'LEFT',       'speed': 45},
-        REVERSE_RIGHT: {'command': rev_cmd, 'steer': 'RIGHT',      'speed': 45},
-        REVERSE:       {'command': rev_cmd, 'steer': 'STEER_STOP', 'speed': 45},
+        REVERSE_LEFT:  {'command': rev_cmd, 'steer': 'LEFT',       'speed': 60},
+        REVERSE_RIGHT: {'command': rev_cmd, 'steer': 'RIGHT',      'speed': 60},
+        REVERSE:       {'command': rev_cmd, 'steer': 'STEER_STOP', 'speed': 60},
     }
     return m.get(action_id, m[STOP])
 

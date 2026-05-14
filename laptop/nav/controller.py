@@ -24,10 +24,11 @@ from .geo import (
 
 # --- Tunables ---
 ARRIVE_M = 3.0                    # waypoint reached if within this many metres
-CALIBRATE_S = 3.0                 # forced FORWARD-at-max for this long after GO
+CALIBRATE_S = 6.0                 # forced FORWARD-at-max for this long after GO
+                                  # (drives long enough for GPS COG to lock + IMU anchor to set)
                                   # (drives a few metres so GPS COG locks in)
-TURN_ENTER_DEG = 45.0             # error > this -> start turning
-TURN_EXIT_DEG = 15.0              # while turning, stop only after error drops below this
+TURN_ENTER_DEG = 60.0             # error > this -> start turning (wider = less wheel drift)
+TURN_EXIT_DEG = 20.0              # while turning, stop only after error drops below this
 HEADING_MIN_SPEED_MPS = 0.35      # below this, GPS heading is unreliable
 HEADING_EMA_ALPHA = 0.25          # low-pass filter on GPS heading (0=none, 1=raw)
 LOOKAHEAD_M = 15.0                # Pure-Pursuit lookahead distance.

@@ -10,9 +10,13 @@ at 115200 baud, ~10Hz.
 """
 
 import json
+import re
 import serial
 import threading
 import time
+
+# Parser for the plain-text sensor_test / all_6_sensors sketch, e.g. "FL: 63.3 cm"
+_TEXT_LINE_RE = re.compile(r'^([A-Z]{2})\s*:\s*(-?\d+\.?\d*)\s*cm', re.IGNORECASE)
 
 
 class UltrasonicSensorReader:
@@ -31,6 +35,15 @@ class UltrasonicSensorReader:
         self.lock = threading.Lock()
         # Default all sensors to 0
         self.data = {'FL': 0.0, 'FR': 0.0, 'FW': 0.0, 'BC': 0.0, 'LS': 0.0, 'RS': 0.0}
+        # IMU heading from Arduino MPU
+        self.imu = {'heading': 0.0, 'gyro_z': 0.0, 'valid': False}
+        self.imu_last_update = 0.0
+        # Per-sensor freshness tracking. If a sensor hasn't been updated in
+        # STALE_S seconds we report MAX_CM ("clear / no object detected")
+        # instead of letting the last reading persist forever.
+        self.last_update = {k: 0.0 for k in self.data}
+        self.STALE_S = 1.5
+        self.MAX_CM = 400.0
 
     def connect(self) -> bool:
         """Open serial connection to Arduino."""
@@ -71,17 +84,31 @@ class UltrasonicSensorReader:
                 if not line:
                     continue
 
-                # Parse JSON
-                try:
-                    parsed = json.loads(line)
-                    with self.lock:
-                        # Update only keys we know about
-                        for key in ['FL', 'FR', 'FW', 'BC', 'LS', 'RS']:
-                            if key in parsed:
-                                self.data[key] = float(parsed[key])
-                except (json.JSONDecodeError, ValueError):
-                    # Not valid JSON, skip
-                    pass
+                # Try JSON first, then plain-text "XX: N.N cm" format
+                if line.startswith('{'):
+                    try:
+                        parsed = json.loads(line)
+                        now = time.time()
+                        with self.lock:
+                            for key in ['FL', 'FR', 'FW', 'BC', 'LS', 'RS']:
+                                if key in parsed:
+                                    self.data[key] = float(parsed[key])
+                                    self.last_update[key] = now
+                            if 'heading' in parsed:
+                                self.imu['heading'] = float(parsed['heading'])
+                                self.imu['gyro_z'] = float(parsed.get('gyro_z', 0.0))
+                                self.imu['valid'] = True
+                                self.imu_last_update = now
+                    except (json.JSONDecodeError, ValueError):
+                        pass
+                else:
+                    m = _TEXT_LINE_RE.match(line)
+                    if m:
+                        key = m.group(1).upper()
+                        if key in ('FL', 'FR', 'FW', 'BC', 'LS', 'RS'):
+                            with self.lock:
+                                self.data[key] = float(m.group(2))
+                                self.last_update[key] = time.time()
 
             except serial.SerialException:
                 print("[SensorReader] Serial error, attempting reconnect...")
@@ -101,15 +128,33 @@ class UltrasonicSensorReader:
             except Exception:
                 time.sleep(0.05)
 
+    def get_imu(self) -> dict:
+        """Return latest IMU data (heading degrees, gyro_z dps, valid flag)."""
+        now = time.time()
+        with self.lock:
+            valid = self.imu['valid'] and (now - self.imu_last_update) < 2.0
+            return {'heading': self.imu['heading'],
+                    'gyro_z':  self.imu['gyro_z'],
+                    'valid':   valid}
+
     def get_latest_data(self) -> dict:
         """
         Get latest sensor readings.
 
+        Any sensor whose value hasn't been refreshed in the last STALE_S
+        seconds is reported as MAX_CM (treated as "clear / no object"),
+        so a sensor that goes silent — e.g. because the Arduino dropped
+        the field on a pulseIn timeout — does NOT keep returning its
+        last value forever.
+
         Returns:
             dict with keys: FL, FR, FW, BC, LS, RS (float values in cm)
         """
+        now = time.time()
         with self.lock:
-            return dict(self.data)
+            return {k: (self.data[k] if now - self.last_update[k] < self.STALE_S
+                        else self.MAX_CM)
+                    for k in self.data}
 
     def stop_reading(self):
         """Stop the background reading thread."""

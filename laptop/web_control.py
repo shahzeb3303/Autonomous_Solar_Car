@@ -615,6 +615,11 @@ def nav_loop():
         lon = gps.get('lon') if valid else None
         heading = gps.get('heading_deg', 0.0)
         speed_mps = gps.get('speed_mps', 0.0)
+        # IMU heading from Arduino MPU works at ANY speed (including stationary).
+        # If the Pi has injected an imu_heading field, bypass the controller's
+        # GPS-speed-based heading-usability gate by pretending speed is high.
+        if gps.get('imu_heading') is not None:
+            speed_mps = max(speed_mps, 1.0)
         sensors = status.get('distances', {}) or {}
         yolo_snap = get_yolo_snapshot()
 
@@ -1236,6 +1241,7 @@ def api_status():
         actual_speed=(st or {}).get('actual_speed', 0),
         distances=(st or {}).get('distances', {}),
         gps=(st or {}).get('gps', {'valid': False, 'lat': 0.0, 'lon': 0.0}),
+        imu=(st or {}).get('imu', {}),
         recording=recorder.is_recording() if recorder else False,
         samples=recorder.samples_written if recorder else 0,
         yolo=get_yolo_snapshot(),
