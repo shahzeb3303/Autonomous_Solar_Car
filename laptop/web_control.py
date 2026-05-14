@@ -341,6 +341,227 @@ def _apply_obstacle_override(wanted: str, sensors: dict, yolo_snap: dict):
     return obstacle_decide(sensors, yolo_snap, wanted_action=wanted)
 
 
+# ========================================================================
+# Distance-monitoring controller (the user's idea, May 2026)
+# ========================================================================
+#
+# Doesn't use GPS heading at all. Just uses GPS *position* and the
+# destination's position.
+#
+# Loop:
+#   every 1 second:
+#     d_now = distance(car, B)
+#     if d_now < ARRIVE_M -> ARRIVED
+#     delta = d_now - d_prev
+#     if delta < -PROGRESS_M  -> we're closing on B, keep going forward
+#     else                    -> we're not closing, turn and try again
+#
+# Steering:
+#   tracks net time spent turning LEFT vs RIGHT.
+#   before going forward, counter-steers for the same total time so the
+#   wheels physically return to straight (the user's "symmetric correction"
+#   insight).
+#
+def nav_loop_distance_based():
+    log.info("[nav-dist] loop started")
+
+    # --- tunables ---
+    ARRIVE_M = 3.0              # stop when this close to B
+    EVAL_PERIOD_S = 1.0         # evaluate distance change every 1 s
+    PROGRESS_M = 0.5            # minimum closing distance per second to count as "going right way"
+    CALIBRATE_S = 2.0           # initial forward burst at GO (lock motion)
+    TURN_DURATION_S = 0.8       # how long to turn when correcting
+    MAX_FORWARD_NO_PROGRESS = 4 # how many evaluations of no-progress before alternating turn
+
+    # --- per-run state (reset on every GO via _last_active flip) ---
+    def fresh():
+        return {
+            'phase': 'CALIBRATING',           # CALIBRATING -> DRIVING -> CORRECT -> RECENTER -> DRIVING ...
+            'phase_started': time.time(),
+            'd_last': None,
+            'd_last_t': time.time(),
+            'no_progress_count': 0,
+            'next_turn_dir': 'RIGHT',         # alternates LEFT/RIGHT each time we correct
+            'steer_ms_right': 0,              # total ms commanded RIGHT
+            'steer_ms_left': 0,               # total ms commanded LEFT
+            'last_tick_t': time.time(),
+            'last_steer_cmd': 'STEER_STOP',
+        }
+    st = fresh()
+    was_active = False
+
+    while True:
+        if not nav_active or pi_client is None:
+            was_active = False
+            time.sleep(0.2)
+            continue
+
+        # Fresh GO -> reset everything
+        if not was_active:
+            st = fresh()
+            was_active = True
+            log.info("[nav-dist] fresh GO, state reset")
+
+        snap = nav.snapshot()
+        if not snap.waypoints:
+            time.sleep(0.1); continue
+
+        status = pi_client.get_status()
+        if status is None:
+            time.sleep(0.1); continue
+
+        gps = status.get('gps', {}) or {}
+        if not gps.get('valid'):
+            pi_client.set_command(drive='STOP', steer='STEER_STOP', speed=0)
+            time.sleep(0.2); continue
+
+        cur = (gps['lat'], gps['lon'])
+        target_wp = snap.waypoints[-1]   # always aim at the FINAL waypoint
+        target = (target_wp['lat'], target_wp['lon'])
+        d_now = _haversine_m(cur, target)
+        sensors = status.get('distances', {}) or {}
+        yolo_snap = get_yolo_snapshot()
+        now = time.time()
+        dt = now - st['last_tick_t']
+        st['last_tick_t'] = now
+
+        # --- accumulate steering ms from LAST tick's command ---
+        if st['last_steer_cmd'] == 'LEFT':
+            st['steer_ms_left'] += int(dt * 1000)
+        elif st['last_steer_cmd'] == 'RIGHT':
+            st['steer_ms_right'] += int(dt * 1000)
+        # net positive = wheels biased right
+        net_steer_ms = st['steer_ms_right'] - st['steer_ms_left']
+
+        # --- arrival check (always) ---
+        if d_now <= ARRIVE_M:
+            log.info(f"[nav-dist] ARRIVED at {d_now:.1f} m from B")
+            pi_client.set_command(drive='STOP', steer='STEER_STOP', speed=0)
+            _set_nav_active(False)
+            continue
+
+        # --- pick desired action by phase ---
+        elapsed_phase = now - st['phase_started']
+
+        if st['phase'] == 'CALIBRATING':
+            # Drive forward at MAX speed for CALIBRATE_S seconds
+            wanted = 'FORWARD'
+            wanted_speed = 100
+            wanted_steer = 'STEER_STOP'
+            if elapsed_phase >= CALIBRATE_S:
+                st['phase'] = 'DRIVING'
+                st['phase_started'] = now
+                st['d_last'] = d_now
+                st['d_last_t'] = now
+                log.info("[nav-dist] calibration done, entering DRIVING")
+
+        elif st['phase'] == 'DRIVING':
+            wanted = 'FORWARD'
+            wanted_speed = 80
+            wanted_steer = 'STEER_STOP'
+
+            # Evaluate progress every 1 s
+            if now - st['d_last_t'] >= EVAL_PERIOD_S:
+                delta = d_now - st['d_last']
+                log.info(f"[nav-dist] eval: d_now={d_now:.1f} d_prev={st['d_last']:.1f} delta={delta:+.2f}")
+                if delta <= -PROGRESS_M:
+                    st['no_progress_count'] = 0   # good — closing on target
+                else:
+                    st['no_progress_count'] += 1
+                    log.info(f"[nav-dist] no progress ({st['no_progress_count']}x)")
+                    if st['no_progress_count'] >= 1:
+                        # Correct course: turn the NEXT direction (alternating)
+                        st['phase'] = 'CORRECT'
+                        st['phase_started'] = now
+                        log.info(f"[nav-dist] -> CORRECT ({st['next_turn_dir']})")
+                st['d_last'] = d_now
+                st['d_last_t'] = now
+
+        elif st['phase'] == 'CORRECT':
+            # Turn in next_turn_dir for TURN_DURATION_S
+            wanted = 'TURN_LEFT' if st['next_turn_dir'] == 'LEFT' else 'TURN_RIGHT'
+            wanted_speed = 55
+            wanted_steer = st['next_turn_dir']
+            if elapsed_phase >= TURN_DURATION_S:
+                # done turning. Alternate next time.
+                st['next_turn_dir'] = 'RIGHT' if st['next_turn_dir'] == 'LEFT' else 'LEFT'
+                # Transition to RECENTER so the wheels return to straight
+                st['phase'] = 'RECENTER'
+                st['phase_started'] = now
+                log.info(f"[nav-dist] -> RECENTER (net_steer_ms={net_steer_ms})")
+
+        elif st['phase'] == 'RECENTER':
+            # Counter-steer for |net_steer_ms| to return wheels to straight.
+            # The user's "Idea #2": symmetric equal-time correction.
+            if net_steer_ms > 50:
+                # biased right -> counter-steer LEFT
+                wanted_steer = 'LEFT'
+                wanted = 'FORWARD'
+                wanted_speed = 0   # don't move while wheels swing
+            elif net_steer_ms < -50:
+                wanted_steer = 'RIGHT'
+                wanted = 'FORWARD'
+                wanted_speed = 0
+            else:
+                # wheels assumed centered, resume driving
+                st['phase'] = 'DRIVING'
+                st['phase_started'] = now
+                st['d_last'] = d_now
+                st['d_last_t'] = now
+                st['steer_ms_left'] = 0
+                st['steer_ms_right'] = 0
+                log.info("[nav-dist] wheels recentered -> DRIVING")
+                wanted = 'FORWARD'
+                wanted_speed = 80
+                wanted_steer = 'STEER_STOP'
+        else:
+            wanted, wanted_speed, wanted_steer = 'STOP', 0, 'STEER_STOP'
+
+        # --- obstacle override (safety net) ---
+        final, reason = _apply_obstacle_override(wanted, sensors, yolo_snap)
+        # Override changes the action -> respect it for steering + drive
+        if final != wanted:
+            wanted = final
+            # Map override actions to drive/steer hints
+            if final in ('TURN_LEFT', 'REVERSE_LEFT'):
+                wanted_steer = 'LEFT'
+            elif final in ('TURN_RIGHT', 'REVERSE_RIGHT'):
+                wanted_steer = 'RIGHT'
+            else:
+                wanted_steer = 'STEER_STOP'
+
+        # --- send command to Pi via existing action_to_pi_command for consistency ---
+        action_id = ACTION_NAMES.index(wanted) if wanted in ACTION_NAMES else STOP
+        cmd = action_to_pi_command(action_id)
+        send_drive = cmd['command']
+        send_steer = wanted_steer
+        send_speed = wanted_speed if wanted_speed is not None else cmd['speed']
+        pi_client.set_command(drive=send_drive, steer=send_steer, speed=send_speed)
+        st['last_steer_cmd'] = send_steer
+
+        # --- periodic log ---
+        if now - getattr(nav_loop_distance_based, '_last_log', 0) > 0.8:
+            nav_loop_distance_based._last_log = now
+            log.info(
+                "[nav-dist] phase=%s d=%.1f m  wanted=%s  steer=%s  net_ms=%+d  obs=%s",
+                st['phase'], d_now, wanted, send_steer, net_steer_ms, reason or '-'
+            )
+
+        time.sleep(0.2)
+
+
+def _haversine_m(p1, p2):
+    """Local copy so this controller has no nav.* dependency."""
+    import math
+    lat1, lon1 = p1
+    lat2, lon2 = p2
+    phi1, phi2 = math.radians(lat1), math.radians(lat2)
+    dphi = math.radians(lat2 - lat1)
+    dlam = math.radians(lon2 - lon1)
+    a = math.sin(dphi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlam / 2) ** 2
+    return 2 * 6_371_000.0 * math.asin(math.sqrt(a))
+
+
 def nav_loop():
     """GPS Pure-Pursuit -> ML model (gated) -> obstacle override -> Pi.
 
@@ -1119,6 +1340,10 @@ def main():
     p.add_argument('--no-yolo', action='store_true')
     p.add_argument('--no-pi', action='store_true')
     p.add_argument('--no-camera', action='store_true')
+    p.add_argument('--controller', choices=['pursuit', 'distance'], default='pursuit',
+                   help='pursuit = GPS Pure-Pursuit (heading-based, v1/v2). '
+                        'distance = distance-monitoring + symmetric counter-steer '
+                        '(no heading dependency, more robust on noisy GPS).')
     p.add_argument('--https', action='store_true',
                    help='Serve HTTPS with a self-signed cert (needed for browser geolocation).')
     p.add_argument('--model',
@@ -1164,7 +1389,12 @@ def main():
 
     recorder = DataRecorder(args.data_dir)
     threading.Thread(target=recorder.record_loop, daemon=True).start()
-    threading.Thread(target=nav_loop, daemon=True).start()
+    if args.controller == 'distance':
+        log.info("[nav] starting DISTANCE-based controller (no heading dependency)")
+        threading.Thread(target=nav_loop_distance_based, daemon=True).start()
+    else:
+        log.info("[nav] starting PURE-PURSUIT controller (default)")
+        threading.Thread(target=nav_loop, daemon=True).start()
 
     print("=" * 60)
     print("  AUTONOMOUS VEHICLE CONTROL")
