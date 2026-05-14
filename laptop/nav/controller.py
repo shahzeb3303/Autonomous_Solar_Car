@@ -24,7 +24,8 @@ from .geo import (
 
 # --- Tunables ---
 ARRIVE_M = 3.0                    # waypoint reached if within this many metres
-CALIBRATE_S = 6.0                 # max time in CALIBRATING before moving on
+CALIBRATE_S = 3.0                 # forced FORWARD-at-max for this long after GO
+                                  # (drives a few metres so GPS COG locks in)
 TURN_ENTER_DEG = 45.0             # error > this -> start turning
 TURN_EXIT_DEG = 15.0              # while turning, stop only after error drops below this
 HEADING_MIN_SPEED_MPS = 0.35      # below this, GPS heading is unreliable
@@ -179,13 +180,19 @@ class NavController:
 
             if self._state == "CALIBRATING":
                 elapsed = (time.time() - self._calib_started) if self._calib_started else 0
-                if heading_usable or elapsed >= CALIBRATE_S:
+                # Stay in calibration for the FULL CALIBRATE_S window AND wait
+                # for heading to be usable. This is the user's idea: drive
+                # forward at max speed first, lock in heading from motion,
+                # then start steering. Don't exit just because COG flickered
+                # valid for one noisy tick.
+                if elapsed >= CALIBRATE_S and heading_usable:
                     self._state = "NAVIGATING"
-                    self._reason = "heading acquired"
+                    self._reason = "calibration complete — heading locked"
                 else:
                     self._last_wanted = "FORWARD"
                     self._last_err = None
-                    self._reason = f"calibrating ({elapsed:0.1f}s)"
+                    self._reason = (f"calibrating {elapsed:0.1f}/{CALIBRATE_S:.1f}s"
+                                    + (" (heading not yet usable)" if not heading_usable else ""))
                     return "FORWARD"
 
             if not heading_usable:

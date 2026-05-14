@@ -324,6 +324,13 @@ class DataRecorder:
 def _set_nav_active(value: bool):
     global nav_active, nav_prev_action
     nav_active = value
+    # Clear *all* nav_loop persistent state so the next GO starts from a
+    # known-neutral pose (wheels assumed straight, no leftover commits,
+    # no half-finished re-centering pulses). Without this the system drifts
+    # over successive runs and starts in a turn by run 3.
+    for attr in ('_last_action', '_last_action_t', '_last_log'):
+        if hasattr(nav_loop, attr):
+            delattr(nav_loop, attr)
     if not value:
         nav_prev_action = STOP
         if pi_client:
@@ -344,16 +351,38 @@ def nav_loop():
     global nav_prev_action
     log.info("[nav] loop started")
 
-    # --- steering integrator ---
-    steer_pos = 0.0                # -1 = full left, 0 = straight, +1 = full right
-    last_steer_cmd = 'STEER_STOP'
-    last_steer_time = time.time()
-    STEER_RATE_PER_S = 1.6         # full sweep in ~0.6 s of continuous PWM
+    STEER_RATE_PER_S = 1.6
     STEER_DEADBAND = 0.10
+    RECENTER_PULSE_S = 0.6     # explicit hardware re-centering pulse
+
+    def fresh_state():
+        return {
+            'steer_pos': 0.0,
+            'last_steer_cmd': 'STEER_STOP',
+            'last_steer_time': time.time(),
+            'recenter_until': 0.0,
+            'recenter_dir': None,
+        }
+    st = fresh_state()
+    was_active = False
 
     while True:
         if not nav_active or pi_client is None:
+            was_active = False
             time.sleep(0.2); continue
+
+        # Fresh GO -> reset steering integrator + pulse state.
+        if not was_active:
+            st = fresh_state()
+            was_active = True
+            log.info("[nav] integrator reset for new run")
+
+        # Unpack for local use (writes go back at the end of the tick)
+        steer_pos = st['steer_pos']
+        last_steer_cmd = st['last_steer_cmd']
+        last_steer_time = st['last_steer_time']
+        recenter_until = st['recenter_until']
+        recenter_dir = st['recenter_dir']
 
         status = pi_client.get_status()
         if status is None:
@@ -448,7 +477,7 @@ def nav_loop():
         else:
             final_for_steer = last_action or final
 
-        # ---- steering integrator (re-center wheels actively) ----
+        # ---- steering integrator (background estimate of wheel position) ----
         dt = now - last_steer_time
         if last_steer_cmd == 'LEFT':
             steer_pos -= STEER_RATE_PER_S * dt
@@ -457,25 +486,67 @@ def nav_loop():
         steer_pos = max(-1.0, min(1.0, steer_pos))
         last_steer_time = now
 
+        # ---- decide steering target ----
         if final_for_steer in ('TURN_LEFT', 'REVERSE_LEFT'):
             target_pos = -1.0
         elif final_for_steer in ('TURN_RIGHT', 'REVERSE_RIGHT'):
             target_pos = +1.0
         else:
-            target_pos = 0.0
+            target_pos = 0.0     # straight
 
-        err = target_pos - steer_pos
-        if abs(err) < STEER_DEADBAND:
-            new_steer = 'STEER_STOP'
-        elif err > 0:
-            new_steer = 'RIGHT'
+        # ---- explicit re-centering pulse on turn -> straight transition ----
+        # Trigger when we just stopped wanting a turn AND wheels are still
+        # not estimated as centered. This is the "after a turn, make the
+        # steering straight" behaviour the user asked for.
+        prev_was_turn_action = last_action in (
+            "TURN_LEFT", "TURN_RIGHT", "REVERSE_LEFT", "REVERSE_RIGHT"
+        )
+        if (prev_was_turn_action
+                and not final_for_steer in ("TURN_LEFT", "TURN_RIGHT",
+                                            "REVERSE_LEFT", "REVERSE_RIGHT")
+                and recenter_until <= now):
+            # Trigger a fresh re-center pulse.
+            if last_action in ("TURN_LEFT", "REVERSE_LEFT"):
+                recenter_dir = 'RIGHT'
+            else:
+                recenter_dir = 'LEFT'
+            recenter_until = now + RECENTER_PULSE_S
+            # Reset our open-loop position estimate to opposite-lock as a
+            # sane starting point for the pulse.
+            steer_pos = (-1.0 if recenter_dir == 'RIGHT' else +1.0)
+
+        if recenter_until > now and target_pos == 0.0:
+            # Active re-center pulse: force opposite-direction PWM.
+            new_steer = recenter_dir
         else:
-            new_steer = 'LEFT'
+            if recenter_until <= now:
+                recenter_dir = None   # pulse done
+            err = target_pos - steer_pos
+            if abs(err) < STEER_DEADBAND:
+                new_steer = 'STEER_STOP'
+            elif err > 0:
+                new_steer = 'RIGHT'
+            else:
+                new_steer = 'LEFT'
         last_steer_cmd = new_steer
 
         send_id = action_id if commit_ok else ACTION_NAMES.index(final_for_steer)
         cmd = action_to_pi_command(send_id)
-        pi_client.set_command(drive=cmd['command'], steer=new_steer, speed=cmd['speed'])
+        # CALIBRATION BURST: drive FORWARD at full throttle during the
+        # CALIBRATING window so the GPS COG has a strong motion signal to
+        # derive heading from. This is "drive a few metres forward to find
+        # out which way you're pointing" — your idea, made explicit.
+        send_speed = cmd['speed']
+        if snap.state == "CALIBRATING" and cmd['command'] in ('FORWARD', 'BACKWARD'):
+            send_speed = 100
+        pi_client.set_command(drive=cmd['command'], steer=new_steer, speed=send_speed)
+
+        # Persist tick-local state back so it survives the next iteration.
+        st['steer_pos'] = steer_pos
+        st['last_steer_cmd'] = last_steer_cmd
+        st['last_steer_time'] = last_steer_time
+        st['recenter_until'] = recenter_until
+        st['recenter_dir'] = recenter_dir
 
         # ---- per-second log ----
         if now - getattr(nav_loop, '_last_log', 0) > 1.0:

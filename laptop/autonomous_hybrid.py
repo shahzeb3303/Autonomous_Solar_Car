@@ -60,6 +60,15 @@ def decide(sensors: dict, yolo: dict | None = None,
     fl, fr, fw = _v(sensors, "FL"), _v(sensors, "FR"), _v(sensors, "FW")
     bc, ls, rs = _v(sensors, "BC"), _v(sensors, "LS"), _v(sensors, "RS")
 
+    # ---- 0. Veto any caller-requested REVERSE if rear isn't clear ----
+    # Without this, the ML model (or any upstream) saying "REVERSE" gets
+    # passed through and the car backs into whatever is behind it.
+    if wanted_action in ("REVERSE", "REVERSE_LEFT", "REVERSE_RIGHT"):
+        if bc is None or bc < BACK_SAFE_CM:
+            return "STOP", "REAR_BLOCKED"
+        # rear clear -> safe to honour the requested reverse
+        return wanted_action, ""
+
     person = int(yolo.get("person_detected", 0) or 0)
     area = float(yolo.get("nearest_area_ratio", 0.0) or 0.0)
     person_pos = int(yolo.get("nearest_position", 0) or 0)   # -1=L 0=C 1=R
