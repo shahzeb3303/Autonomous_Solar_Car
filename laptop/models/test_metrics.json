@@ -1,0 +1,10 @@
+{
+  "test_loss": 1.7073032892610034,
+  "test_acc": 0.8732101015360583,
+  "best_val_loss": 1.8490131810307502,
+  "splits": {
+    "train": "laptop/models/splits/train.csv",
+    "val": "laptop/models/splits/val.csv",
+    "test": "laptop/models/splits/test.csv"
+  }
+}
